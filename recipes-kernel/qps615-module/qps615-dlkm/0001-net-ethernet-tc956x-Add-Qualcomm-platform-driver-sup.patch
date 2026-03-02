@@ -1,0 +1,416 @@
+From 1501daf7c7e5bd4083d48db976d9fabc7e72e8e4 Mon Sep 17 00:00:00 2001
+From: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+Date: Mon, 16 Mar 2026 14:05:12 +0530
+Subject: [PATCH 1/5] net: ethernet: tc956x: Add Qualcomm platform driver
+ support
+
+The TC956X PCIe Ethernet bridge (QPS615) requires SoC-specific
+initialization on Qualcomm platforms that is not handled by the
+generic PCI driver. Add a dedicated platform driver file,
+tc956x_qcom.c, to manage this hardware configuration. This
+requires stubbing out the existing platform functions.
+
+The Qualcomm platform driver handles:
+ - PHY reset control via TC956X GPIO or SoC GPIO descriptor
+ - PHY power supply management
+ - Pinctrl default state selection
+ - Wake-on-LAN IRQ configuration
+ - Suspend/resume hooks that gate PHY power when WoL is inactive
+
+Upstream-Status: Inappropriate [Qualcomm specific platform logic]
+Signed-off-by: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+---
+ drivers/net/ethernet/toshiba/tc956x/Makefile  |   4 +
+ .../net/ethernet/toshiba/tc956x/tc956x_qcom.c | 296 ++++++++++++++++++
+ .../net/ethernet/toshiba/tc956x/tc956xmac.h   |   4 +-
+ .../ethernet/toshiba/tc956x/tc956xmac_main.c  |  39 ---
+ 4 files changed, 302 insertions(+), 41 deletions(-)
+ create mode 100644 drivers/net/ethernet/toshiba/tc956x/tc956x_qcom.c
+
+diff --git a/drivers/net/ethernet/toshiba/tc956x/Makefile b/drivers/net/ethernet/toshiba/tc956x/Makefile
+index 908c52b..b7dbcd9 100644
+--- a/drivers/net/ethernet/toshiba/tc956x/Makefile
++++ b/drivers/net/ethernet/toshiba/tc956x/Makefile
+@@ -78,6 +78,10 @@ ifeq ($(TC956XMAC_SELFTESTS), 1)
+ 	tc956x_pcie_eth-y += tc956xmac_selftests.o
+ endif
+ 
++# Qualcomm platform support
++EXTRA_CFLAGS += -DCONFIG_TC956X_PLATFORM_SUPPORT
++tc956x_pcie_eth-y += tc956x_qcom.o
++
+ endif
+ ccflags-y := -Wmissing-prototypes
+ 
+diff --git a/drivers/net/ethernet/toshiba/tc956x/tc956x_qcom.c b/drivers/net/ethernet/toshiba/tc956x/tc956x_qcom.c
+new file mode 100644
+index 0000000..0eb71d8
+--- /dev/null
++++ b/drivers/net/ethernet/toshiba/tc956x/tc956x_qcom.c
+@@ -0,0 +1,296 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Copyright (c) 2021, The Linux Foundation. All rights reserved.
++// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
++
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/gpio/consumer.h>
++#include <linux/kernel.h>
++#include <linux/of_irq.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/regulator/consumer.h>
++
++#include "tc956xmac.h"
++
++/*
++ * Multiple hardware variations are possible:
++ *
++ * phy_reset_gpio != NULL  -> SoC/expander GPIO path (phy-rst-som-gpios)
++ * phy_reset_gpio == NULL  -> QPS615 internal GPIO path (qcom,phy-rst-gpio-id)
++ * phy_supply != NULL      -> enable/disable regulator around reset
++ * phy_supply == NULL      -> supply is always-on (phy-supply absent)
++ */
++struct tc956x_qcom_priv {
++	struct gpio_desc	*phy_reset_gpio;
++	u32			 phy_rst_tc956x_gpio;
++	struct regulator	*phy_supply;
++	u32			 phy_rst_delay_us;
++	struct pinctrl		*pinctrl;
++	struct pinctrl_state	*pinctrl_default;
++	int			 wol_irq;
++};
++
++#define to_qpriv(priv)	((struct tc956x_qcom_priv *)(priv)->plat_priv)
++
++static int tc956x_phy_reset_assert(struct tc956xmac_priv *priv)
++{
++	struct tc956x_qcom_priv *qpriv = to_qpriv(priv);
++
++	if (qpriv->phy_reset_gpio) {
++		gpiod_set_value_cansleep(qpriv->phy_reset_gpio, 1);
++		return 0;
++	}
++
++	return tc956x_GPIO_OutputConfigPin(priv, qpriv->phy_rst_tc956x_gpio, 0);
++}
++
++static int tc956x_phy_reset_deassert(struct tc956xmac_priv *priv)
++{
++	struct tc956x_qcom_priv *qpriv = to_qpriv(priv);
++
++	if (qpriv->phy_reset_gpio) {
++		gpiod_set_value_cansleep(qpriv->phy_reset_gpio, 0);
++		return 0;
++	}
++
++	return tc956x_GPIO_OutputConfigPin(priv, qpriv->phy_rst_tc956x_gpio, 1);
++}
++
++static int tc956x_phy_power_on(struct tc956xmac_priv *priv)
++{
++	struct tc956x_qcom_priv *qpriv = to_qpriv(priv);
++	int ret;
++
++	if (qpriv->phy_supply) {
++		ret = regulator_enable(qpriv->phy_supply);
++		if (ret) {
++			dev_err(priv->device,
++				"Failed to enable PHY supply: %d\n", ret);
++			return ret;
++		}
++	}
++
++	ret = tc956x_phy_reset_deassert(priv);
++	if (ret) {
++		dev_err(priv->device,
++			"Failed to deassert PHY reset: %d\n", ret);
++		if (qpriv->phy_supply)
++			regulator_disable(qpriv->phy_supply);
++		return ret;
++	}
++
++	usleep_range(qpriv->phy_rst_delay_us, qpriv->phy_rst_delay_us);
++	return 0;
++}
++
++static int tc956x_phy_power_off(struct tc956xmac_priv *priv)
++{
++	struct tc956x_qcom_priv *qpriv = to_qpriv(priv);
++	int ret;
++
++	ret = tc956x_phy_reset_assert(priv);
++	if (ret) {
++		dev_err(priv->device,
++			"Failed to assert PHY reset: %d\n", ret);
++		return ret;
++	}
++
++	if (qpriv->phy_supply) {
++		ret = regulator_disable(qpriv->phy_supply);
++		if (ret)
++			dev_err(priv->device,
++				"Failed to disable PHY supply: %d\n", ret);
++	}
++
++	return ret;
++}
++
++int tc956x_platform_port_interface_overlay(struct device *dev,
++					   struct tc956xmac_resources *res)
++{
++	/* Currently unused */
++	return 0;
++}
++
++static int tc956x_platform_of_parse(struct device *dev,
++				    struct tc956x_qcom_priv *qpriv)
++{
++	int ret;
++
++	/*
++	 * Either:
++	 *  - phy-rst-som-gpios (SoC/expander GPIO):
++	 *  - qcom,phy-rst-gpio-id (QPS615 internal GPIO, qcs6490-rb3gen2):
++	 *    u32 GPIO index (0 or 1) passed to tc956x_GPIO_OutputConfigPin()
++	 */
++	qpriv->phy_reset_gpio = devm_gpiod_get_optional(dev, "phy-rst-som",
++							 GPIOD_OUT_HIGH);
++	if (IS_ERR(qpriv->phy_reset_gpio))
++		return dev_err_probe(dev, PTR_ERR(qpriv->phy_reset_gpio),
++				     "Failed to get phy-rst-som-gpios\n");
++
++	if (!qpriv->phy_reset_gpio &&
++	    of_property_read_u32(dev->of_node, "qcom,phy-rst-gpio-id",
++				 &qpriv->phy_rst_tc956x_gpio)) {
++		dev_err(dev,
++			"No PHY reset GPIO: provide phy-rst-som-gpios or qcom,phy-rst-gpio-id\n");
++		return -EINVAL;
++	}
++
++	if (of_property_read_u32(dev->of_node, "qcom,phy-rst-delay-us",
++				 &qpriv->phy_rst_delay_us)) {
++		dev_err(dev,
++			"Missing required property qcom,phy-rst-delay-us\n");
++		return -EINVAL;
++	}
++
++	/*
++	 * Some boards have an always-on supply, so this is optional
++	 */
++	qpriv->phy_supply = devm_regulator_get_optional(dev, "phy");
++	if (IS_ERR(qpriv->phy_supply)) {
++		ret = PTR_ERR(qpriv->phy_supply);
++		if (ret != -ENODEV)
++			return dev_err_probe(dev, ret,
++					     "Failed to get phy-supply\n");
++		qpriv->phy_supply = NULL;
++	}
++
++	/* wol_irq is optional */
++	qpriv->wol_irq = of_irq_get_byname(dev->of_node, "wol_irq");
++	if (qpriv->wol_irq < 0) {
++		ret = qpriv->wol_irq;
++		if (ret == -EPROBE_DEFER)
++			return ret;
++		dev_dbg(dev, "No wol_irq defined, WoL IRQ disabled\n");
++		qpriv->wol_irq = 0;
++	}
++
++	/* pinctrl is optional */
++	qpriv->pinctrl = devm_pinctrl_get(dev);
++	if (IS_ERR(qpriv->pinctrl)) {
++		ret = PTR_ERR(qpriv->pinctrl);
++		if (ret != -ENODEV)
++			return dev_err_probe(dev, ret,
++					     "Failed to get pinctrl\n");
++		qpriv->pinctrl = NULL;
++	}
++
++	if (qpriv->pinctrl) {
++		qpriv->pinctrl_default =
++			pinctrl_lookup_state(qpriv->pinctrl,
++					     PINCTRL_STATE_DEFAULT);
++		if (IS_ERR(qpriv->pinctrl_default))
++			return dev_err_probe(dev,
++					     PTR_ERR(qpriv->pinctrl_default),
++					     "Failed to look up default pinctrl state\n");
++	}
++
++	return 0;
++}
++
++int tc956x_platform_probe(struct tc956xmac_priv *priv,
++			  struct tc956xmac_resources *res)
++{
++	struct tc956x_qcom_priv *qpriv;
++	int ret;
++
++	qpriv = devm_kzalloc(priv->device, sizeof(*qpriv), GFP_KERNEL);
++	if (!qpriv)
++		return -ENOMEM;
++
++	priv->plat_priv = qpriv;
++
++	ret = tc956x_platform_of_parse(priv->device, qpriv);
++	if (ret)
++		goto err_out;
++
++	/*
++	 * SoC GPIO: already asserted via GPIOD_OUT_HIGH during get
++	 * QPS615 GPIO path: assert explicitly here.
++	 */
++	if (!qpriv->phy_reset_gpio) {
++		ret = tc956x_phy_reset_assert(priv);
++		if (ret) {
++			dev_err(priv->device,
++				"Failed to assert PHY reset: %d\n", ret);
++			goto err_out;
++		}
++	}
++
++	if (qpriv->pinctrl) {
++		ret = pinctrl_select_state(qpriv->pinctrl,
++					   qpriv->pinctrl_default);
++		if (ret) {
++			dev_err(priv->device,
++				"Failed to select default pinctrl state: %d\n",
++				ret);
++			goto err_out;
++		}
++	}
++
++	ret = tc956x_phy_power_on(priv);
++	if (ret) {
++		dev_err(priv->device, "Failed to power on PHY: %d\n", ret);
++		goto err_out;
++	}
++
++	res->wol_irq = qpriv->wol_irq;
++	return 0;
++
++err_out:
++	priv->plat_priv = NULL;
++	return ret;
++}
++
++int tc956x_platform_remove(struct tc956xmac_priv *priv)
++{
++	int ret;
++
++	ret = tc956x_phy_power_off(priv);
++	if (ret)
++		dev_err(priv->device, "Failed to power off PHY: %d\n", ret);
++
++	priv->plat_priv = NULL;
++	return ret;
++}
++
++int tc956x_platform_suspend(struct tc956xmac_priv *priv)
++{
++	int ret = 0;
++
++	if (priv->wolopts) {
++		ret = enable_irq_wake(priv->wol_irq);
++		if (ret)
++			dev_err(priv->device,
++				"Failed to enable WoL IRQ %d as wakeup source: %d\n",
++				priv->wol_irq, ret);
++	} else {
++		ret = tc956x_phy_power_off(priv);
++		if (ret)
++			dev_err(priv->device,
++				"Failed to power off PHY: %d\n", ret);
++	}
++
++	return ret;
++}
++
++int tc956x_platform_resume(struct tc956xmac_priv *priv)
++{
++	int ret = 0;
++
++	if (priv->wolopts) {
++		ret = disable_irq_wake(priv->wol_irq);
++		if (ret)
++			dev_err(priv->device,
++				"Failed to disable WoL IRQ %d wakeup: %d\n",
++				priv->wol_irq, ret);
++	} else {
++		ret = tc956x_phy_power_on(priv);
++		if (ret)
++			dev_err(priv->device,
++				"Failed to power on PHY: %d\n", ret);
++	}
++
++	return ret;
++}
+diff --git a/drivers/net/ethernet/toshiba/tc956x/tc956xmac.h b/drivers/net/ethernet/toshiba/tc956x/tc956xmac.h
+index 279e36d..c0b8f0a 100644
+--- a/drivers/net/ethernet/toshiba/tc956x/tc956xmac.h
++++ b/drivers/net/ethernet/toshiba/tc956x/tc956xmac.h
+@@ -1294,10 +1294,10 @@ int tc956x_platform_suspend(struct tc956xmac_priv *priv);
+ int tc956x_platform_resume(struct tc956xmac_priv *priv);
+ int tc956x_platform_port_interface_overlay(struct device *dev, struct tc956xmac_resources *res);
+ #else
+-int tc956x_platform_probe(struct tc956xmac_priv *priv, struct tc956xmac_resources *res);
++static inline int tc956x_platform_probe(struct tc956xmac_priv *priv, struct tc956xmac_resources *res) { return 0; }
+ static inline int tc956x_platform_remove(struct tc956xmac_priv *priv) { return 0; }
+ static inline int tc956x_platform_suspend(struct tc956xmac_priv *priv) { return 0; }
+-int tc956x_platform_resume(struct tc956xmac_priv *priv);
++static inline int tc956x_platform_resume(struct tc956xmac_priv *priv) { return 0; }
+ static inline int tc956x_platform_port_interface_overlay(struct device *dev, struct tc956xmac_resources *res) { return 0; }
+ #endif
+ 
+diff --git a/drivers/net/ethernet/toshiba/tc956x/tc956xmac_main.c b/drivers/net/ethernet/toshiba/tc956x/tc956xmac_main.c
+index a4d8ca8..2b0b4c5 100644
+--- a/drivers/net/ethernet/toshiba/tc956x/tc956xmac_main.c
++++ b/drivers/net/ethernet/toshiba/tc956x/tc956xmac_main.c
+@@ -15349,45 +15349,6 @@ static int validate_rsc_mgr_alloc(struct tc956xmac_priv *priv, struct net_device
+ 	return ret;
+ }
+ #endif
+-/**
+- * tc956x_platform_probe
+- * @priv: driver private structure
+- * @res: tc956xmac resource pointer
+- * Description: this is the platform specific function
+- * returns 0 on success
+- */
+-int tc956x_platform_probe(struct tc956xmac_priv *priv, struct tc956xmac_resources *res)
+-{
+-#ifdef RBTC9563_3MA
+-#ifdef RBTC9563_3DB
+-	tc956x_GPIO_OutputConfigPin(priv, GPIO_12, 0);
+-#else
+-	tc956x_GPIO_OutputConfigPin(priv, GPIO_12, 1);
+-	tc956x_GPIO_OutputConfigPin(priv, GPIO_13, 0);
+-#endif
+-#endif
+-	return 0;
+-}
+-/**
+- * tc956x_platform_probe
+- * @priv: driver private structure
+- * @res: tc956xmac resource pointer
+- * Description: this is the platform specific function
+- * returns 0 on success
+- */
+-int tc956x_platform_resume(struct tc956xmac_priv *priv)
+-{
+-#ifdef RBTC9563_3MA
+-#ifdef RBTC9563_3DB
+-		tc956x_GPIO_OutputConfigPin(priv, GPIO_12, 0);
+-#else
+-		tc956x_GPIO_OutputConfigPin(priv, GPIO_12, 1);
+-		tc956x_GPIO_OutputConfigPin(priv, GPIO_13, 0);
+-#endif
+-#endif
+-
+-	return 0;
+-}
+ /**
+  * tc956xmac_dvr_probe
+  * @device: device pointer
+-- 
+2.34.1
+
