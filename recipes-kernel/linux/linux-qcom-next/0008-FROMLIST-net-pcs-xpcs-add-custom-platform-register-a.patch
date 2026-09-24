@@ -1,0 +1,80 @@
+From 9569351815c1c03f31f42ffe52a8761f797ea347 Mon Sep 17 00:00:00 2001
+From: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+Date: Wed, 23 Sep 2026 02:43:21 +0530
+Subject: [PATCH 08/18] FROMLIST: net: pcs: xpcs: add custom platform register
+ accessors
+
+Some XPCS integrations do not expose the standard direct or indirect
+register layout. Allow the platform driver to use optional register read
+and write callbacks for both Clause 22 and Clause 45 accesses, while
+retaining the existing access paths when no callbacks are supplied.
+
+Link: https://lore.kernel.org/netdev/20260923-qcom_xpcs_nord_emac-v1-3-4b1c682af70f@oss.qualcomm.com/
+Upstream-Status: Submitted [https://lore.kernel.org/netdev/20260923-qcom_xpcs_nord_emac-v1-3-4b1c682af70f@oss.qualcomm.com/]
+Signed-off-by: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+
+diff --git a/drivers/net/pcs/pcs-xpcs-plat.c b/drivers/net/pcs/pcs-xpcs-plat.c
+index f4b1b8246ce9..068272426a30 100644
+--- a/drivers/net/pcs/pcs-xpcs-plat.c
++++ b/drivers/net/pcs/pcs-xpcs-plat.c
+@@ -24,8 +24,16 @@
+ /* Page select register for the indirect MMIO CSRs access */
+ #define DW_VR_CSR_VIEWPORT		0xff
+ 
++struct dw_xpcs_plat_ops {
++	int (*reg_read)(struct platform_device *pdev, void __iomem *reg_base,
++			int dev, int reg);
++	int (*reg_write)(struct platform_device *pdev, void __iomem *reg_base,
++			 int dev, int reg, u16 val);
++};
++
+ struct dw_xpcs_plat {
+ 	struct platform_device *pdev;
++	const struct dw_xpcs_plat_ops *ops;
+ 	struct mii_bus *bus;
+ 	bool reg_indir;
+ 	int reg_width;
+@@ -169,6 +177,10 @@ static int xpcs_mmio_read_c22(struct mii_bus *bus, int addr, int reg)
+ 	if (addr != 0)
+ 		return -ENODEV;
+ 
++	if (pxpcs->ops)
++		return pxpcs->ops->reg_read(pxpcs->pdev, pxpcs->reg_base,
++					    MDIO_MMD_VEND2, reg);
++
+ 	if (pxpcs->reg_indir)
+ 		return xpcs_mmio_read_reg_indirect(pxpcs, MDIO_MMD_VEND2, reg);
+ 	else
+@@ -182,6 +194,10 @@ static int xpcs_mmio_write_c22(struct mii_bus *bus, int addr, int reg, u16 val)
+ 	if (addr != 0)
+ 		return -ENODEV;
+ 
++	if (pxpcs->ops)
++		return pxpcs->ops->reg_write(pxpcs->pdev, pxpcs->reg_base,
++					     MDIO_MMD_VEND2, reg, val);
++
+ 	if (pxpcs->reg_indir)
+ 		return xpcs_mmio_write_reg_indirect(pxpcs, MDIO_MMD_VEND2, reg, val);
+ 	else
+@@ -195,6 +211,10 @@ static int xpcs_mmio_read_c45(struct mii_bus *bus, int addr, int dev, int reg)
+ 	if (addr != 0)
+ 		return -ENODEV;
+ 
++	if (pxpcs->ops)
++		return pxpcs->ops->reg_read(pxpcs->pdev, pxpcs->reg_base,
++					    dev, reg);
++
+ 	if (pxpcs->reg_indir)
+ 		return xpcs_mmio_read_reg_indirect(pxpcs, dev, reg);
+ 	else
+@@ -209,6 +229,10 @@ static int xpcs_mmio_write_c45(struct mii_bus *bus, int addr, int dev,
+ 	if (addr != 0)
+ 		return -ENODEV;
+ 
++	if (pxpcs->ops)
++		return pxpcs->ops->reg_write(pxpcs->pdev, pxpcs->reg_base,
++					     dev, reg, val);
++
+ 	if (pxpcs->reg_indir)
+ 		return xpcs_mmio_write_reg_indirect(pxpcs, dev, reg, val);
+ 	else

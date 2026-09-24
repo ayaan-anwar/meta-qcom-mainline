@@ -1,0 +1,259 @@
+From 22644c3aa1988d41732922d00fcffe3c19626a79 Mon Sep 17 00:00:00 2001
+From: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+Date: Wed, 23 Sep 2026 02:44:50 +0530
+Subject: [PATCH 09/18] FROMLIST: net: pcs: xpcs: add Qualcomm Nord platform
+ support
+
+Qualcomm Nord exposes the DesignWare XPCS register blocks through
+separate direct-MMIO windows instead of the standard contiguous
+MMD/register layout. Add accessors that translate MMD accesses to the
+Nord windows:
+
+  MMD 3 (PCS), standard registers: SR_XS at 0x0000
+  MMD 3 (PCS), vendor registers:   VR_XS at 0x2000
+  MMD 1 (PMA/PMD):                  SR_PMA at 0x3000
+  MMD 31 (VEND2), standard regs:    SR_MII at 0x4000
+  MMD 31 (VEND2), vendor registers: VR_MII at 0x5000
+
+Each register uses a 32-bit MMIO stride. The vendor bit is removed from
+the register index before calculating a vendor-window offset.
+
+Select these accessors using the Nord synthetic XPCS ID, allow its
+smaller direct-MMIO resource, and add the Nord USXGMII Clause 37
+compatibility.
+
+Link: https://lore.kernel.org/netdev/20260923-qcom_xpcs_nord_emac-v1-4-4b1c682af70f@oss.qualcomm.com/
+Upstream-Status: Submitted [https://lore.kernel.org/netdev/20260923-qcom_xpcs_nord_emac-v1-4-4b1c682af70f@oss.qualcomm.com/]
+Signed-off-by: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+
+diff --git a/drivers/net/pcs/Makefile b/drivers/net/pcs/Makefile
+index 4f7920618b90..3d7cf1a5cd07 100644
+--- a/drivers/net/pcs/Makefile
++++ b/drivers/net/pcs/Makefile
+@@ -2,7 +2,8 @@
+ # Makefile for Linux PCS drivers
+ 
+ pcs_xpcs-$(CONFIG_PCS_XPCS)	:= pcs-xpcs.o pcs-xpcs-plat.o \
+-				   pcs-xpcs-nxp.o pcs-xpcs-wx.o
++				   pcs-xpcs-nxp.o pcs-xpcs-qcom.o \
++				   pcs-xpcs-wx.o
+ 
+ obj-$(CONFIG_PCS_XPCS)		+= pcs_xpcs.o
+ obj-$(CONFIG_PCS_LYNX)		+= pcs-lynx.o
+diff --git a/drivers/net/pcs/pcs-xpcs-plat.c b/drivers/net/pcs/pcs-xpcs-plat.c
+index 068272426a30..50778712d9eb 100644
+--- a/drivers/net/pcs/pcs-xpcs-plat.c
++++ b/drivers/net/pcs/pcs-xpcs-plat.c
+@@ -20,6 +20,7 @@
+ #include <linux/sizes.h>
+ 
+ #include "pcs-xpcs.h"
++#include "pcs-xpcs-qcom.h"
+ 
+ /* Page select register for the indirect MMIO CSRs access */
+ #define DW_VR_CSR_VIEWPORT		0xff
+@@ -239,8 +240,14 @@ static int xpcs_mmio_write_c45(struct mii_bus *bus, int addr, int dev,
+ 		return xpcs_mmio_write_reg_direct(pxpcs, dev, reg, val);
+ }
+ 
++static const struct dw_xpcs_plat_ops xpcs_qcom_ops = {
++	.reg_read = xpcs_qcom_reg_read,
++	.reg_write = xpcs_qcom_reg_write,
++};
++
+ static struct dw_xpcs_plat *xpcs_plat_create_data(struct platform_device *pdev)
+ {
++	const struct dw_xpcs_info *info;
+ 	struct dw_xpcs_plat *pxpcs;
+ 
+ 	pxpcs = devm_kzalloc(&pdev->dev, sizeof(*pxpcs), GFP_KERNEL);
+@@ -248,6 +255,12 @@ static struct dw_xpcs_plat *xpcs_plat_create_data(struct platform_device *pdev)
+ 		return ERR_PTR(-ENOMEM);
+ 
+ 	pxpcs->pdev = pdev;
++	info = device_get_match_data(&pdev->dev);
++	if (!info)
++		return ERR_PTR(-EINVAL);
++
++	if (info->pcs == QCOM_NORD_XPCS_ID)
++		pxpcs->ops = &xpcs_qcom_ops;
+ 
+ 	dev_set_drvdata(&pdev->dev, pxpcs);
+ 
+@@ -285,7 +298,7 @@ static int xpcs_plat_init_res(struct dw_xpcs_plat *pxpcs)
+ 	else
+ 		spc_size = pxpcs->reg_width * SZ_2M;
+ 
+-	if (resource_size(res) < spc_size) {
++	if (!pxpcs->ops && resource_size(res) < spc_size) {
+ 		dev_err(dev, "Invalid reg-space size\n");
+ 		return -EINVAL;
+ 	}
+@@ -452,8 +465,10 @@ DW_XPCS_INFO_DECLARE(xpcs_pma_gen4_3g, DW_XPCS_ID_NATIVE, DW_XPCS_PMA_GEN4_3G_ID
+ DW_XPCS_INFO_DECLARE(xpcs_pma_gen4_6g, DW_XPCS_ID_NATIVE, DW_XPCS_PMA_GEN4_6G_ID);
+ DW_XPCS_INFO_DECLARE(xpcs_pma_gen5_10g, DW_XPCS_ID_NATIVE, DW_XPCS_PMA_GEN5_10G_ID);
+ DW_XPCS_INFO_DECLARE(xpcs_pma_gen5_12g, DW_XPCS_ID_NATIVE, DW_XPCS_PMA_GEN5_12G_ID);
++DW_XPCS_INFO_DECLARE(xpcs_qcom_nord, QCOM_NORD_XPCS_ID, DW_XPCS_PMA_ID_NATIVE);
+ 
+ static const struct of_device_id xpcs_of_ids[] = {
++	{ .compatible = "qcom,nord-dw-xpcs", .data = &xpcs_qcom_nord },
+ 	{ .compatible = "snps,dw-xpcs", .data = &xpcs_generic },
+ 	{ .compatible = "snps,dw-xpcs-gen1-3g", .data = &xpcs_pma_gen1_3g },
+ 	{ .compatible = "snps,dw-xpcs-gen2-3g", .data = &xpcs_pma_gen2_3g },
+diff --git a/drivers/net/pcs/pcs-xpcs-qcom.c b/drivers/net/pcs/pcs-xpcs-qcom.c
+new file mode 100644
+index 000000000000..63c95c951454
+--- /dev/null
++++ b/drivers/net/pcs/pcs-xpcs-qcom.c
+@@ -0,0 +1,86 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Qualcomm DesignWare XPCS platform helpers
++ *
++ * Copyright (c) 2026 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++#include <linux/io.h>
++#include <linux/mdio.h>
++#include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
++
++#include "pcs-xpcs.h"
++#include "pcs-xpcs-qcom.h"
++
++/* Qualcomm Nord direct MMIO XPCS windows. */
++#define QCOM_XPCS_SR_XS_BASE		0x0000
++#define QCOM_XPCS_VR_XS_BASE		0x2000
++#define QCOM_XPCS_SR_PMA_BASE		0x3000
++#define QCOM_XPCS_SR_MII_BASE		0x4000
++#define QCOM_XPCS_VR_MII_BASE		0x5000
++
++static int xpcs_qcom_reg_offset(int dev, int reg)
++{
++	switch (dev) {
++	case MDIO_MMD_PCS:
++		if (reg & DW_VENDOR)
++			return QCOM_XPCS_VR_XS_BASE +
++			       ((reg & ~DW_VENDOR) << 2);
++
++		return QCOM_XPCS_SR_XS_BASE + (reg << 2);
++
++	case MDIO_MMD_PMAPMD:
++		return QCOM_XPCS_SR_PMA_BASE + (reg << 2);
++
++	case MDIO_MMD_VEND2:
++		if (reg >= DW_VENDOR)
++			return QCOM_XPCS_VR_MII_BASE +
++			       ((reg - DW_VENDOR) << 2);
++
++		return QCOM_XPCS_SR_MII_BASE + (reg << 2);
++
++	default:
++		return -EOPNOTSUPP;
++	}
++}
++
++int xpcs_qcom_reg_read(struct platform_device *pdev, void __iomem *reg_base,
++		       int dev, int reg)
++{
++	int offset, ret;
++
++	offset = xpcs_qcom_reg_offset(dev, reg);
++	if (offset < 0)
++		return offset;
++
++	ret = pm_runtime_resume_and_get(&pdev->dev);
++	if (ret < 0)
++		return ret;
++
++	ret = readl(reg_base + offset) & 0xffff;
++
++	pm_runtime_put(&pdev->dev);
++
++	return ret;
++}
++
++int xpcs_qcom_reg_write(struct platform_device *pdev, void __iomem *reg_base,
++			int dev, int reg, u16 val)
++{
++	int offset, ret;
++
++	offset = xpcs_qcom_reg_offset(dev, reg);
++	if (offset < 0)
++		return offset;
++
++	ret = pm_runtime_resume_and_get(&pdev->dev);
++	if (ret < 0)
++		return ret;
++
++	writel(val, reg_base + offset);
++
++	pm_runtime_put(&pdev->dev);
++
++	return 0;
++}
+diff --git a/drivers/net/pcs/pcs-xpcs-qcom.h b/drivers/net/pcs/pcs-xpcs-qcom.h
+new file mode 100644
+index 000000000000..a1084f6a10a9
+--- /dev/null
++++ b/drivers/net/pcs/pcs-xpcs-qcom.h
+@@ -0,0 +1,16 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++#ifndef __PCS_XPCS_QCOM_H
++#define __PCS_XPCS_QCOM_H
++
++#include <linux/io.h>
++#include <linux/types.h>
++
++struct platform_device;
++
++int xpcs_qcom_reg_read(struct platform_device *pdev, void __iomem *reg_base,
++		       int dev, int reg);
++int xpcs_qcom_reg_write(struct platform_device *pdev, void __iomem *reg_base,
++			int dev, int reg, u16 val);
++
++#endif /* __PCS_XPCS_QCOM_H */
+diff --git a/drivers/net/pcs/pcs-xpcs.c b/drivers/net/pcs/pcs-xpcs.c
+index aa3e612e9dc9..091c9b57388f 100644
+--- a/drivers/net/pcs/pcs-xpcs.c
++++ b/drivers/net/pcs/pcs-xpcs.c
+@@ -1571,6 +1571,15 @@ static const struct dw_xpcs_compat nxp_sja1110_xpcs_compat[] = {
+ 	}
+ };
+ 
++static const struct dw_xpcs_compat qcom_nord_xpcs_compat[] = {
++	{
++		.interface = PHY_INTERFACE_MODE_USXGMII,
++		.supported = xpcs_usxgmii_features,
++		.an_mode = DW_AN_C37_USXGMII,
++	}, {
++	}
++};
++
+ static const struct dw_xpcs_desc xpcs_desc_list[] = {
+ 	{
+ 		.id = DW_XPCS_ID,
+@@ -1584,6 +1593,10 @@ static const struct dw_xpcs_desc xpcs_desc_list[] = {
+ 		.id = NXP_SJA1110_XPCS_ID,
+ 		.mask = DW_XPCS_ID_MASK,
+ 		.compat = nxp_sja1110_xpcs_compat,
++	}, {
++		.id = QCOM_NORD_XPCS_ID,
++		.mask = DW_XPCS_ID_MASK,
++		.compat = qcom_nord_xpcs_compat,
+ 	},
+ };
+ 
+diff --git a/include/linux/pcs/pcs-xpcs.h b/include/linux/pcs/pcs-xpcs.h
+index 4ea995b70150..0f69e14b2a4c 100644
+--- a/include/linux/pcs/pcs-xpcs.h
++++ b/include/linux/pcs/pcs-xpcs.h
+@@ -26,6 +26,7 @@ enum dw_xpcs_pcs_id {
+ 	DW_XPCS_ID_NATIVE = 0,
+ 	NXP_SJA1105_XPCS_ID = 0x00000010,
+ 	NXP_SJA1110_XPCS_ID = 0x00000020,
++	QCOM_NORD_XPCS_ID = 0x00000030,
+ 	DW_XPCS_ID = 0x7996ced0,
+ 	DW_XPCS_ID_MASK = 0xffffffff,
+ };

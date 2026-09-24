@@ -1,0 +1,56 @@
+From 3a7b613f711180f63fa6a3326b01fe4ab93d96bb Mon Sep 17 00:00:00 2001
+From: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+Date: Wed, 23 Sep 2026 02:40:44 +0530
+Subject: [PATCH 06/18] FROMLIST: dt-bindings: net: pcs: add Qualcomm Nord XPCS
+
+Document the Qualcomm Nord integrated DesignWare XPCS compatible. The
+XPCS resides in an Ethernet power domain and requires its CSR clock for
+register access, so require the clock and power-domain resources for
+this compatible.
+
+Link: https://lore.kernel.org/netdev/20260923-qcom_xpcs_nord_emac-v1-1-4b1c682af70f@oss.qualcomm.com/
+Upstream-Status: Submitted [https://lore.kernel.org/netdev/20260923-qcom_xpcs_nord_emac-v1-1-4b1c682af70f@oss.qualcomm.com/]
+Signed-off-by: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+
+diff --git a/Documentation/devicetree/bindings/net/pcs/snps,dw-xpcs.yaml b/Documentation/devicetree/bindings/net/pcs/snps,dw-xpcs.yaml
+index e77eec9ac9ee..68bb941cbb29 100644
+--- a/Documentation/devicetree/bindings/net/pcs/snps,dw-xpcs.yaml
++++ b/Documentation/devicetree/bindings/net/pcs/snps,dw-xpcs.yaml
+@@ -22,6 +22,17 @@ description:
+   by means of the APB3/MCI interfaces. In the later case the XPCS can be mapped
+   right to the system IO memory space.
+ 
++allOf:
++  - if:
++      properties:
++        compatible:
++          const: qcom,nord-dw-xpcs
++    then:
++      required:
++        - clocks
++        - clock-names
++        - power-domains
++
+ properties:
+   compatible:
+     oneOf:
+@@ -41,6 +52,8 @@ properties:
+         const: snps,dw-xpcs-gen5-10g
+       - description: Synopsys DesignWare XPCS with Consumer Gen5 12G PMA
+         const: snps,dw-xpcs-gen5-12g
++      - description: Qualcomm Nord integrated DesignWare XPCS
++        const: qcom,nord-dw-xpcs
+ 
+   reg:
+     items:
+@@ -98,6 +111,10 @@ properties:
+           - enum: [core, pad]
+           - const: pad
+ 
++  power-domains:
++    description: Power domain containing the integrated PCS registers
++    maxItems: 1
++
+ required:
+   - compatible
+   - reg

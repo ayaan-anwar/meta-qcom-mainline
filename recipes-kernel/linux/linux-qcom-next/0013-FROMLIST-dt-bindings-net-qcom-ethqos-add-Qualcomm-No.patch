@@ -1,0 +1,167 @@
+From 43c036eb27de82bfbfda095cf623300974586e5f Mon Sep 17 00:00:00 2001
+From: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+Date: Wed, 23 Sep 2026 00:34:19 +0530
+Subject: [PATCH 13/18] FROMLIST: dt-bindings: net: qcom,ethqos: add Qualcomm
+ Nord
+
+Qualcomm Nord integrates two ETHQOS controllers based on the Synopsys
+DesignWare XGMAC IP. Each controller has five clocks, one power domain,
+and ten SMMU stream mappings.
+
+Due to a hardware quirk, PCS link-up depends on the EEE clock being
+enabled.
+
+Add the Nord compatible to the common DWMAC schema exceptions used by
+Qualcomm ETHQOS platforms.
+
+Link: https://lore.kernel.org/netdev/20260923-qcom_xpcs_nord_emac-v1-6-4b1c682af70f@oss.qualcomm.com/
+Upstream-Status: Submitted [https://lore.kernel.org/netdev/20260923-qcom_xpcs_nord_emac-v1-6-4b1c682af70f@oss.qualcomm.com/]
+Signed-off-by: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+
+diff --git a/Documentation/devicetree/bindings/net/qcom,ethqos.yaml b/Documentation/devicetree/bindings/net/qcom,ethqos.yaml
+index ad2cc706fa74..f9e5b9605337 100644
+--- a/Documentation/devicetree/bindings/net/qcom,ethqos.yaml
++++ b/Documentation/devicetree/bindings/net/qcom,ethqos.yaml
+@@ -11,8 +11,8 @@ maintainers:
+   - Konrad Dybcio <konradybcio@kernel.org>
+ 
+ description:
+-  dwmmac based Qualcomm ethernet devices which support Gigabit
+-  ethernet (version v2.3.0 and onwards).
++  DWMAC and XGMAC based Qualcomm Ethernet devices supporting Gigabit and
++  multi-gigabit Ethernet.
+ 
+ properties:
+   compatible:
+@@ -27,6 +27,7 @@ properties:
+           - const: qcom,sa8775p-ethqos
+       - enum:
+           - qcom,qcs404-ethqos
++          - qcom,nord-ethqos
+           - qcom,sa8775p-ethqos
+           - qcom,sc8280xp-ethqos
+           - qcom,shikra-ethqos
+@@ -59,19 +60,40 @@ properties:
+     maxItems: 6
+ 
+   clock-names:
+-    minItems: 4
+-    items:
+-      - const: stmmaceth
+-      - const: pclk
+-      - const: ptp_ref
+-      - enum:
+-          - rgmii
+-          - phyaux
+-      - const: axi-noc
+-      - const: pcie-tile-axi-noc
++    oneOf:
++      - items:
++          - const: stmmaceth
++          - const: pclk
++          - const: ptp_ref
++          - enum:
++              - rgmii
++              - phyaux
++        minItems: 4
++        maxItems: 4
++      - items:
++          - const: stmmaceth
++          - const: pclk
++          - const: ptp_ref
++          - const: phyaux
++          - const: eee
++            description: |
++              Due to a hardware quirk, PCS link-up depends on the EEE clock
++              being enabled.
++        minItems: 5
++        maxItems: 5
++      - items:
++          - const: stmmaceth
++          - const: pclk
++          - const: ptp_ref
++          - const: rgmii
++          - const: axi-noc
++          - const: pcie-tile-axi-noc
++        minItems: 6
++        maxItems: 6
+ 
+   iommus:
+-    maxItems: 1
++    minItems: 1
++    maxItems: 10
+ 
+   dma-coherent: true
+ 
+@@ -122,17 +144,40 @@ allOf:
+       required:
+         - operating-points-v2
+     else:
+-      properties:
+-        clocks:
+-          maxItems: 4
+-        clock-names:
+-          items:
+-            - const: stmmaceth
+-            - const: pclk
+-            - const: ptp_ref
+-            - enum:
+-                - rgmii
+-                - phyaux
++      if:
++        properties:
++          compatible:
++            contains:
++              const: qcom,nord-ethqos
++      then:
++        properties:
++          clocks:
++            minItems: 5
++            maxItems: 5
++          clock-names:
++            minItems: 5
++            maxItems: 5
++          iommus:
++            minItems: 10
++            maxItems: 10
++        required:
++          - power-domains
++      else:
++        properties:
++          clocks:
++            maxItems: 4
++          clock-names:
++            minItems: 4
++            maxItems: 4
++            items:
++              - const: stmmaceth
++              - const: pclk
++              - const: ptp_ref
++              - enum:
++                  - rgmii
++                  - phyaux
++          iommus:
++            maxItems: 1
+ 
+ unevaluatedProperties: false
+ 
+diff --git a/Documentation/devicetree/bindings/net/snps,dwmac.yaml b/Documentation/devicetree/bindings/net/snps,dwmac.yaml
+index 6a1aea371c0b..eb78de951ffc 100644
+--- a/Documentation/devicetree/bindings/net/snps,dwmac.yaml
++++ b/Documentation/devicetree/bindings/net/snps,dwmac.yaml
+@@ -72,6 +72,7 @@ properties:
+         - nuvoton,ma35d1-dwmac
+         - nxp,s32g2-dwmac
+         - qcom,qcs404-ethqos
++        - qcom,nord-ethqos
+         - qcom,sa8775p-ethqos
+         - qcom,sc8280xp-ethqos
+         - qcom,shikra-ethqos
+@@ -631,6 +632,7 @@ allOf:
+                 - ingenic,x1830-mac
+                 - ingenic,x2000-mac
+                 - qcom,qcs404-ethqos
++                - qcom,nord-ethqos
+                 - qcom,sa8775p-ethqos
+                 - qcom,sc8280xp-ethqos
+                 - qcom,shikra-ethqos

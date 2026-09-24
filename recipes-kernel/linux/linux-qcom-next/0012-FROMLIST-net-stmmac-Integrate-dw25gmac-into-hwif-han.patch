@@ -1,0 +1,45 @@
+From e9a8ad5b19168f060e1abc8adad286d21aa3b6da Mon Sep 17 00:00:00 2001
+From: Jitendra Vegiraju <jitendra.vegiraju@broadcom.com>
+Date: Thu, 2 Apr 2026 14:36:27 -0700
+Subject: [PATCH 12/18] FROMLIST: net: stmmac: Integrate dw25gmac into hwif
+ handling
+
+Integrate dw25gmac support into stmmac hardware interface handling.
+Added a new entry to the stmmac_hw table in hwif.c.
+
+Link: https://lore.kernel.org/netdev/20260402213629.1996133-3-jitendra.vegiraju@broadcom.com/
+Upstream-Status: Submitted [https://lore.kernel.org/netdev/20260402213629.1996133-3-jitendra.vegiraju@broadcom.com/]
+Signed-off-by: Jitendra Vegiraju <jitendra.vegiraju@broadcom.com>
+Signed-off-by: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+
+diff --git a/drivers/net/ethernet/stmicro/stmmac/hwif.c b/drivers/net/ethernet/stmicro/stmmac/hwif.c
+index 265671170bf6..4bea373a881c 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/hwif.c
++++ b/drivers/net/ethernet/stmicro/stmmac/hwif.c
+@@ -287,6 +287,26 @@ static const struct stmmac_hwif_entry {
+ 		.mmc = &dwxgmac_mmc_ops,
+ 		.est = &dwmac510_est_ops,
+ 		.setup = dwxlgmac2_setup,
++	}, {
++		.core_type = DWMAC_CORE_25GMAC,
++		.min_id = DW25GMAC_CORE_3_20,
++		.regs = {
++			.ptp_off = PTP_XGMAC_OFFSET,
++			.mmc_off = MMC_XGMAC_OFFSET,
++			.est_off = EST_XGMAC_OFFSET,
++		},
++		.desc = &dwxgmac210_desc_ops,
++		.dma = &dw25gmac400_dma_ops,
++		.mac = &dwxgmac210_ops,
++		.vlan = &dwxgmac210_vlan_ops,
++		.hwtimestamp = &stmmac_ptp,
++		.ptp = &stmmac_ptp_clock_ops,
++		.mode = NULL,
++		.tc = &dwmac510_tc_ops,
++		.mmc = &dwxgmac_mmc_ops,
++		.est = &dwmac510_est_ops,
++		.setup = dw25gmac_setup,
++		.quirks = NULL,
+ 	},
+ };
+ 

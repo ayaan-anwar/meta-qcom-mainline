@@ -1,0 +1,42 @@
+From b771ab7985cd697fab6fdca6d11a1bd457d47b1a Mon Sep 17 00:00:00 2001
+From: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+Date: Wed, 23 Sep 2026 02:45:36 +0530
+Subject: [PATCH 10/18] FROMLIST: net: pcs: xpcs: initialize runtime PM as
+ suspended
+
+xpcs_plat_init_clk() acquires the optional CSR clock but does not
+prepare or enable it. Marking the device runtime-active at that point
+makes the PM core assume that the hardware is already powered.
+
+On Nord, once the XPCS CSR clock was described, the first
+pm_runtime_resume_and_get() accessed XPCS registers without invoking
+runtime_resume() to enable the clock. The matching runtime put then
+invoked runtime_suspend() and attempted to disable a clock which was
+never enabled, producing an already-disabled clock warning.
+
+Initialize the runtime-PM state as suspended instead. The first
+register access now runs the resume callback and enables the CSR clock,
+while the subsequent suspend callback performs the matching disable.
+Check and propagate the state-transition error as part of probe.
+
+Link: https://lore.kernel.org/netdev/20260923-qcom_xpcs_nord_emac-v1-5-4b1c682af70f@oss.qualcomm.com/
+Upstream-Status: Submitted [https://lore.kernel.org/netdev/20260923-qcom_xpcs_nord_emac-v1-5-4b1c682af70f@oss.qualcomm.com/]
+Signed-off-by: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+
+diff --git a/drivers/net/pcs/pcs-xpcs-plat.c b/drivers/net/pcs/pcs-xpcs-plat.c
+index 50778712d9eb..3bcd9cedf843 100644
+--- a/drivers/net/pcs/pcs-xpcs-plat.c
++++ b/drivers/net/pcs/pcs-xpcs-plat.c
+@@ -322,7 +322,11 @@ static int xpcs_plat_init_clk(struct dw_xpcs_plat *pxpcs)
+ 		return dev_err_probe(dev, PTR_ERR(pxpcs->cclk),
+ 				     "Failed to get CSR clock\n");
+ 
+-	pm_runtime_set_active(dev);
++	ret = pm_runtime_set_suspended(dev);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "Failed to set runtime-PM suspended state\n");
++
+ 	ret = devm_pm_runtime_enable(dev);
+ 	if (ret) {
+ 		dev_err(dev, "Failed to enable runtime-PM\n");

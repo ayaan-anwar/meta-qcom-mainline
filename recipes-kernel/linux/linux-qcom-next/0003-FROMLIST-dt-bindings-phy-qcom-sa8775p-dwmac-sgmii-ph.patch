@@ -1,0 +1,25 @@
+From 54f531fa94cd8809ffaef585c43abe0287641e54 Mon Sep 17 00:00:00 2001
+From: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+Date: Wed, 16 Sep 2026 11:42:55 +0530
+Subject: [PATCH 03/18] FROMLIST: dt-bindings: phy:
+ qcom,sa8775p-dwmac-sgmii-phy: add Nord compatible
+
+Add the qcom,nord-dwmac-sgmii-phy compatible to the Qualcomm DWMAC
+SGMII PHY binding.
+
+Link: https://lore.kernel.org/linux-arm-msm/20260923-nord_ethernet_serdes-v1-1-f8ac1c487882@oss.qualcomm.com/
+Upstream-Status: Submitted [https://lore.kernel.org/linux-arm-msm/20260923-nord_ethernet_serdes-v1-1-f8ac1c487882@oss.qualcomm.com/]
+Signed-off-by: Mohd Ayaan Anwar <mohd.anwar@oss.qualcomm.com>
+
+diff --git a/Documentation/devicetree/bindings/phy/qcom,sa8775p-dwmac-sgmii-phy.yaml b/Documentation/devicetree/bindings/phy/qcom,sa8775p-dwmac-sgmii-phy.yaml
+index e573abcb937d..f2df9983d953 100644
+--- a/Documentation/devicetree/bindings/phy/qcom,sa8775p-dwmac-sgmii-phy.yaml
++++ b/Documentation/devicetree/bindings/phy/qcom,sa8775p-dwmac-sgmii-phy.yaml
+@@ -21,6 +21,7 @@ properties:
+               - qcom,qcs8300-dwmac-sgmii-phy
+           - const: qcom,sa8775p-dwmac-sgmii-phy
+       - const: qcom,sa8775p-dwmac-sgmii-phy
++      - const: qcom,nord-dwmac-sgmii-phy
+ 
+   reg:
+     items:
