@@ -15,3 +15,5 @@ MACHINE_ESSENTIAL_EXTRA_RRECOMMENDS += " \
 MACHINE_EXTRA_RRECOMMENDS += " \
     packagegroup-qcom-boot-additional \
 "
+
+KERNEL_CMDLINE_EXTRA:append = " loglevel=3"
