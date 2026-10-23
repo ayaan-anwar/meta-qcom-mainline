@@ -1,0 +1,71 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+
+set -eu
+
+# Optional paths allow checking assignments without changing live networking.
+machine_id_file=${1:-/etc/machine-id}
+slot_file=${2:-/etc/nord-lab-mac-slot}
+profile_dir=${3:-/run/NetworkManager/system-connections}
+
+fail() {
+    echo "nord-lab-mac: $*" >&2
+    exit 1
+}
+
+machine_id=$(cat "$machine_id_file") || fail "cannot read $machine_id_file"
+[ "${#machine_id}" -eq 32 ] || fail "machine ID must contain 32 hexadecimal digits"
+case "$machine_id" in
+    *[!0-9a-f]*|00000000000000000000000000000000)
+        fail "machine ID must be a nonzero lowercase hexadecimal value"
+        ;;
+esac
+
+# The final hexadecimal digit is the full 128-bit machine ID modulo 16.
+last_digit=${machine_id#${machine_id%?}}
+slot=$((0x$last_digit))
+if [ -e "$slot_file" ]; then
+    slot=$(cat "$slot_file") || fail "cannot read $slot_file"
+    case "$slot" in
+        [0-9]|1[0-5]) ;;
+        *) fail "slot override must be a decimal number from 0 to 15" ;;
+    esac
+fi
+
+umask 077
+mkdir -p "$profile_dir"
+tmp_profile=
+trap '[ -z "$tmp_profile" ] || rm -f "$tmp_profile"' 0
+
+for port in 0 1; do
+    case "$port" in
+        0) device_path=platform-1a00000.ethernet ;;
+        1) device_path=platform-1a80000.ethernet ;;
+    esac
+    mac=$(printf '02:11:22:33:44:%02x' "$((0x60 + 2 * slot + port))")
+    tmp_profile=$(mktemp "$profile_dir/.nord-lab-mac.XXXXXX")
+    cat > "$tmp_profile" <<EOF
+[connection]
+id=nord-lab-ethernet$port
+uuid=64a4d8aa-72b6-4c6f-b380-fd8294eeada$port
+type=ethernet
+autoconnect=true
+autoconnect-priority=100
+
+[match]
+path=$device_path
+
+[ethernet]
+cloned-mac-address=$mac
+
+[ipv4]
+method=auto
+dhcp-client-id=mac
+
+[ipv6]
+method=auto
+EOF
+    # Replace complete profiles before NetworkManager reads them.
+    mv -f "$tmp_profile" "$profile_dir/nord-lab-ethernet$port.nmconnection"
+    echo "nord-lab-mac: slot $slot, $device_path -> $mac" >&2
+done
