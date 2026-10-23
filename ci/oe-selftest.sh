@@ -61,7 +61,9 @@ echo "Test modules to run: $TEST_CASES"
 # Create a temporary build directory (same pattern as yocto-check-layer.sh)
 BUILDDIR="$(mktemp -p "$WORK_DIR" -d -t build-oe-selftest-XXXX)"
 cd "$WORK_DIR/oe-core"
-. ./oe-init-build-env "$BUILDDIR"
+# Set arguments explicitly because dash does not pass arguments to '.'.
+set -- "$BUILDDIR"
+. ./oe-init-build-env
 
 # Add the meta-qcom layer
 bitbake-layers add-layer "$REPO_DIR"
@@ -90,4 +92,6 @@ if [ -n "$GIT_CLONEDIR_JOB_LOCAL" ]; then
     done
 fi
 
-oe-selftest --run-tests "$TEST_CASES"
+# Pass each discovered module as a separate test selection.
+# shellcheck disable=SC2086
+oe-selftest --run-tests $TEST_CASES
